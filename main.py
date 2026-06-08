@@ -10,8 +10,7 @@ st.set_page_config(page_title="한/미 주요 주식 수익률 비교", page_ico
 st.title("📈 한/미 주요 주식 & 지수 수익률 비교 분석기")
 st.markdown("한국과 미국의 대표 종목 및 시장 지수의 **누적 수익률(%)**을 한눈에 비교해 보세요.")
 
-# 분석 대상 주식 딕셔너리 (표시명: 티커)
-# 한국 주식은 티커 뒤에 '.KS'(코스피) 또는 '.KQ'(코스닥)를 붙여야 합니다.
+# 분석 대상 주식 딕셔너리
 TICKERS = {
     "한국: KOSPI 지수": "^KS11",
     "한국: 삼성전자": "005930.KS",
@@ -42,48 +41,71 @@ selected_names = st.sidebar.multiselect(
     default=["한국: 삼성전자", "미국: 애플 (AAPL)", "한국: KOSPI 지수", "미국: S&P 500 지수"]
 )
 
-# 데이터 다운로드 캐싱 함수 (속도 최적화 및 최신 yfinance 버전 대응)
-@st.cache_data(ttl=3600) # 1시간마다 데이터 갱신
+# 데이터 다운로드 및 정제 함수 (통합 다운로드 방식으로 완벽 해결)
+@st.cache_data(ttl=3600)
 def load_data(tickers_dict, start, end):
-    data = pd.DataFrame()
-    for name, ticker in tickers_dict.items():
-        try:
-            # 최신 yfinance는 history()를 사용해 'Close'를 가져오는 것이 가장 안정적입니다.
-            # 기본적으로 액면분할 및 배당이 자동으로 반영된 종가 데이터를 반환합니다.
-            df = yf.Ticker(ticker).history(start=start, end=end)
-            
-            if not df.empty and 'Close' in df.columns:
-                data[name] = df['Close']
-            else:
-                st.warning(f"{name}({ticker})의 해당 기간 데이터가 존재하지 않습니다.")
-        except Exception as e:
-            st.error(f"{name}({ticker}) 데이터를 불러오는 데 실패했습니다: {e}")
-            
-    # 한국/미국 주식의 타임존 정보가 섞여서 생기는 시각화 에러 방지
-    if not data.empty:
-        data.index = data.index.tz_localize(None)
+    if not tickers_dict:
+        return pd.DataFrame()
         
-    return data
+    ticker_list = list(tickers_dict.values())
+    
+    try:
+        # 모든 종목을 '한 번에' 다운로드하여 내부적으로 날짜 축을 자동 결합합니다.
+        # auto_adjust=True를 통해 최신 yfinance 버전의 Close(수정종가)를 가져옵니다.
+        df = yf.download(ticker_list, start=start, end=end, auto_adjust=True)
+        
+        if df.empty:
+            return pd.DataFrame()
+            
+        # 단일 종목 선택 시와 다중 종목 선택 시의 데이터프레임 구조 대응
+        if 'Close' in df.columns:
+            if isinstance(df.columns, pd.MultiIndex):
+                price_data = df['Close']  # 다중 종목일 때
+            else:
+                price_data = pd.DataFrame({ticker_list[0]: df['Close']})  # 단일 종목일 때
+        else:
+            return pd.DataFrame()
+            
+        # 티커 기호(예: AAPL)를 사용자가 읽기 좋은 이름(예: 미국: 애플 (AAPL))으로 일괄 변경
+        inv_tickers = {v: k for k, v in tickers_dict.items()}
+        price_data = price_data.rename(columns=inv_tickers)
+        
+        # 시간대(Timezone) 정보를 완전히 지우고 순수한 '연-월-일' 날짜로 통일
+        price_data.index = price_data.index.tz_localize(None)
+        price_data.index = pd.to_datetime(price_data.index.date)
+        
+        # 중복 날짜가 생길 경우 최신 데이터만 남김
+        price_data = price_data.groupby(price_data.index).last()
+        
+        # 한/미 휴장일 차이로 생기는 빈칸(NaN)을 직전 거래일 주가로 채워넣음
+        price_data = price_data.ffill().bfill()
+        
+        # 사용자가 선택한 종목 순서대로 열 정렬
+        final_cols = [name for name in tickers_dict.keys() if name in price_data.columns]
+        price_data = price_data[final_cols]
+        
+        return price_data
+        
+    except Exception as e:
+        st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
+        return pd.DataFrame()
 
 # --- 메인 화면 로직 ---
 if not selected_names:
     st.warning("사이드바에서 하나 이상의 종목을 선택해 주세요.")
 else:
-    # 선택된 종목의 티커만 필터링
     selected_tickers = {name: TICKERS[name] for name in selected_names}
     
     with st.spinner("주식 데이터를 불러오는 중입니다... ⏳"):
-        # 데이터 로드
         price_data = load_data(selected_tickers, start_date, end_date)
         
     if price_data.empty:
         st.error("선택한 기간의 데이터가 없습니다. 날짜를 다시 설정해 주세요.")
     else:
-        # 1. 누적 수익률(%) 계산 로직
-        # 기준일(첫 거래일)의 가격을 0%로 맞추고 이후의 변화량을 퍼센트로 계산
+        # 누적 수익률(%) 계산 (첫날 가격 기준으로 변동률 계산)
         returns_data = (price_data / price_data.iloc[0] - 1) * 100
         
-        # Plotly를 이용한 반응형 선형 차트 생성
+        # Plotly 반응형 선형 차트 생성
         fig = px.line(
             returns_data, 
             x=returns_data.index, 
@@ -91,15 +113,13 @@ else:
             title=f"누적 수익률 비교 ({start_date} ~ {end_date})",
             labels={"value": "누적 수익률 (%)", "Date": "날짜", "variable": "종목"}
         )
-        
-        # 차트 레이아웃 조정 (에러 났던 괄호 부분을 확실하게 닫았습니다!)
         fig.update_layout(hovermode="x unified", legend_title_text="종목명")
         fig.update_yaxes(ticksuffix="%")
         
         # 차트 출력
         st.plotly_chart(fig, use_container_width=True)
         
-        # 2. 요약 테이블 데이터 생성
+        # 요약 테이블 데이터 생성
         st.subheader("📊 기간 내 요약 지표")
         
         summary_data = []
