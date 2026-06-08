@@ -42,18 +42,27 @@ selected_names = st.sidebar.multiselect(
     default=["한국: 삼성전자", "미국: 애플 (AAPL)", "한국: KOSPI 지수", "미국: S&P 500 지수"]
 )
 
-# 데이터 다운로드 캐싱 함수 (속도 최적화)
+# 데이터 다운로드 캐싱 함수 (속도 최적화 및 최신 yfinance 버전 대응)
 @st.cache_data(ttl=3600) # 1시간마다 데이터 갱신
 def load_data(tickers_dict, start, end):
     data = pd.DataFrame()
     for name, ticker in tickers_dict.items():
         try:
-            # yfinance를 통해 수정 종가(Adj Close) 데이터 다운로드
-            df = yf.download(ticker, start=start, end=end, progress=False)
-            if not df.empty:
-                data[name] = df['Adj Close']
+            # 최신 yfinance는 history()를 사용해 'Close'를 가져오는 것이 가장 안정적입니다.
+            # 기본적으로 액면분할 및 배당이 자동으로 반영된 종가 데이터를 반환합니다.
+            df = yf.Ticker(ticker).history(start=start, end=end)
+            
+            if not df.empty and 'Close' in df.columns:
+                data[name] = df['Close']
+            else:
+                st.warning(f"{name}({ticker})의 해당 기간 데이터가 존재하지 않습니다.")
         except Exception as e:
             st.error(f"{name}({ticker}) 데이터를 불러오는 데 실패했습니다: {e}")
+            
+    # 한국/미국 주식의 타임존 정보가 섞여서 생기는 시각화 에러 방지
+    if not data.empty:
+        data.index = data.index.tz_localize(None)
+        
     return data
 
 # --- 메인 화면 로직 ---
@@ -83,30 +92,4 @@ else:
             labels={"value": "누적 수익률 (%)", "Date": "날짜", "variable": "종목"}
         )
         # 차트 레이아웃 조정
-        fig.update_layout(hovermode="x unified", legend_title_text="종목명")
-        fig.update_yaxes(ticksuffix="%")
-        
-        # 차트 출력
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 2. 요약 테이블 데이터 생성
-        st.subheader("📊 기간 내 요약 지표")
-        
-        summary_data = []
-        for col in price_data.columns:
-            start_price = price_data[col].iloc[0]
-            end_price = price_data[col].iloc[-1]
-            total_return = returns_data[col].iloc[-1]
-            
-            summary_data.append({
-                "종목명": col,
-                "시작 가격": f"{start_price:,.2f}",
-                "최종 가격": f"{end_price:,.2f}",
-                "누적 수익률 (%)": f"{total_return:,.2f}%"
-            })
-            
-        summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-st.markdown("---")
-st.caption("※ 본 데이터는 Yahoo Finance를 통해 제공되며, 실제 거래 데이터와 약간의 지연이나 차이가 있을 수 있습니다. 투자 참고용으로만 사용해 주세요.")
+        fig.update_layout(hovermode="x unified", legend_title
