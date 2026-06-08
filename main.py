@@ -91,5 +91,32 @@ else:
             title=f"누적 수익률 비교 ({start_date} ~ {end_date})",
             labels={"value": "누적 수익률 (%)", "Date": "날짜", "variable": "종목"}
         )
-        # 차트 레이아웃 조정
-        fig.update_layout(hovermode="x unified", legend_title
+        
+        # 차트 레이아웃 조정 (에러 났던 괄호 부분을 확실하게 닫았습니다!)
+        fig.update_layout(hovermode="x unified", legend_title_text="종목명")
+        fig.update_yaxes(ticksuffix="%")
+        
+        # 차트 출력
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 2. 요약 테이블 데이터 생성
+        st.subheader("📊 기간 내 요약 지표")
+        
+        summary_data = []
+        for col in price_data.columns:
+            start_price = price_data[col].iloc[0]
+            end_price = price_data[col].iloc[-1]
+            total_return = returns_data[col].iloc[-1]
+            
+            summary_data.append({
+                "종목명": col,
+                "시작 가격": f"{start_price:,.2f}",
+                "최종 가격": f"{end_price:,.2f}",
+                "누적 수익률 (%)": f"{total_return:,.2f}%"
+            })
+            
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+st.markdown("---")
+st.caption("※ 본 데이터는 Yahoo Finance를 통해 제공되며, 실제 거래 데이터와 약간의 지연이나 차이가 있을 수 있습니다. 투자 참고용으로만 사용해 주세요.")
